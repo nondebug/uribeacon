@@ -20,17 +20,17 @@ import android.view.MenuItem;
 import android.widget.Toast;
 
 /**
- * Advertise a URI Beacon with Android L
- * See http://physical-web.org for more info
+ * Advertise an Eddystone Beacon
+ * See http://physical-web.org & https://github.com/google/eddystone/ for more info
  *
  * @author Don Coleman
  */
 public class UriBeaconAdvertiserActivity extends Activity {
 
-    private static final String TAG = "UriBeaconAdvertiserActivity";
+    private static final String TAG = "UriBeaconAdvertiser";
     private static final int ENABLE_BLUETOOTH_REQUEST = 17;
-    // Really 0xFED8, but Android seems to prefer the expanded 128-bit UUID version
-    private static final ParcelUuid URI_BEACON_UUID = ParcelUuid.fromString("0000FED8-0000-1000-8000-00805F9B34FB");
+    // Really 0xFEAA, but Android seems to prefer the expanded 128-bit UUID version
+    private static final ParcelUuid URI_BEACON_UUID = ParcelUuid.fromString("0000FEAA-0000-1000-8000-00805F9B34FB");
 
     private BluetoothAdapter bluetoothAdapter;
 
@@ -54,11 +54,13 @@ public class UriBeaconAdvertiserActivity extends Activity {
 
     private AdvertiseData getAdvertisementData() {
         AdvertiseData.Builder builder = new AdvertiseData.Builder();
-        builder.setIncludeTxPowerLevel(false); // reserve advertising space for URI
+        builder.setIncludeTxPowerLevel(false);
 
+        // Manually build the advertising info to send the URL http://www.eff.org
+        // See https://github.com/google/eddystone/tree/master/eddystone-url
         byte[] beaconData = new byte[7];
-        beaconData[0] = 0x00; // flags
-        beaconData[1] = (byte) 0xBA; // transmit power
+        beaconData[0] = 0x10; // frame type: url
+        beaconData[1] = (byte) 0xBA; // calibrated tx power at 0 m
         beaconData[2] = 0x00; // http://www.
         beaconData[3] = 0x65; // e
         beaconData[4] = 0x66; // f
@@ -67,7 +69,7 @@ public class UriBeaconAdvertiserActivity extends Activity {
 
         builder.addServiceData(URI_BEACON_UUID, beaconData);
 
-        // Adding 0xFED8 to the "Service Complete List UUID 16" (0x3) for iOS compatibility
+        // Adding 0xFEAA to the "Service Complete List UUID 16" (0x3) for iOS compatibility
         builder.addServiceUuid(URI_BEACON_UUID);
 
         return builder.build();
