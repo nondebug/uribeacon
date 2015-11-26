@@ -13,61 +13,137 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.ParcelUuid;
+import android.util.Base64;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
 /**
- * Advertise a URI Beacon with Android L
- * See http://physical-web.org for more info
+ * Advertise an Eddystone Beacon
+ * See http://physical-web.org & https://github.com/google/eddystone/ for more info
  *
  * @author Don Coleman
  */
 public class UriBeaconAdvertiserActivity extends Activity {
 
-    private static final String TAG = "UriBeaconAdvertiserActivity";
+    private static final String TAG = "UriBeaconAdvertiser";
     private static final int ENABLE_BLUETOOTH_REQUEST = 17;
-    // Really 0xFED8, but Android seems to prefer the expanded 128-bit UUID version
-    private static final ParcelUuid URI_BEACON_UUID = ParcelUuid.fromString("0000FED8-0000-1000-8000-00805F9B34FB");
+    // Really 0xFEAA, but Android seems to prefer the expanded 128-bit UUID version
+    private static final ParcelUuid URI_BEACON_UUID = ParcelUuid.fromString("0000FEAA-0000-1000-8000-00805F9B34FB");
+    private static final String ADV_URL_BASE = "http://tiny.cc/C9/";
+    private static final int URL_FLIP_INTERVAL_MILLIS = 60000; // 1 minute
+    private static final String SECRET = "locomoco";
 
     private BluetoothAdapter bluetoothAdapter;
+    private String mAdvertiseUrl;
+    private TextView mAdvertisingText;
+
+    private Handler mTimerHandler;
+    private Runnable mTimerCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_uri_beacon);
 
+        mAdvertiseUrl = ADV_URL_BASE + hashTime(System.currentTimeMillis());
+        mAdvertisingText = (TextView) findViewById(R.id.advertising_text);
+
         setupBluetooth();
+        setAdvertisingText();
+
+        mTimerHandler = new Handler();
+        mTimerCallback = new Runnable() {
+            @Override
+            public void run() {
+                mTimerHandler.removeCallbacks(mTimerCallback);
+                mTimerHandler.postDelayed(mTimerCallback, URL_FLIP_INTERVAL_MILLIS);
+                flipUrl();
+            }
+        };
+
+        mTimerHandler.postDelayed(mTimerCallback, URL_FLIP_INTERVAL_MILLIS);
+    }
+
+    private static String hashTime(long millis) {
+        long minutes = millis / URL_FLIP_INTERVAL_MILLIS;
+        String input = SECRET + minutes;
+        byte[] sha1 = toSHA1(input.getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        for (byte b : sha1) {
+            sb.append(Integer.toString((b & 0xff) + 0x100, 16).substring(1));
+        }
+        String sha1String = sb.toString();
+        String base64Encoded = Base64.encodeToString(sha1String.getBytes(StandardCharsets.UTF_8), Base64.NO_PADDING);
+        String sub = base64Encoded.substring(0, 5);
+        return sub;
+    }
+
+    private static byte[] toSHA1(byte[] convertme) {
+        MessageDigest md = null;
+        try {
+            md = MessageDigest.getInstance("SHA-1");
+        }
+        catch(NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+        return md.digest(convertme);
+    }
+
+    private void flipUrl() {
+        mAdvertiseUrl = ADV_URL_BASE + hashTime(System.currentTimeMillis());
+
+        advertiseUriBeacon();
+        setAdvertisingText();
+        Log.i(TAG, "Flipped to " + getAdvertiseUrl());
+    }
+
+    private void setAdvertisingText() {
+        mAdvertisingText.setText("Advertising " + getAdvertiseUrl());
+    }
+
+    private String getAdvertiseUrl() {
+        return mAdvertiseUrl;
     }
 
     private void advertiseUriBeacon() {
 
         BluetoothLeAdvertiser bluetoothLeAdvertiser = bluetoothAdapter.getBluetoothLeAdvertiser();
 
-        AdvertiseData advertisementData = getAdvertisementData();
+        AdvertiseData advertisementData = getAdvertisementData(getAdvertiseUrl());
         AdvertiseSettings advertiseSettings = getAdvertiseSettings();
 
-        bluetoothLeAdvertiser.startAdvertising(advertiseSettings, advertisementData, advertiseCallback);
+        bluetoothLeAdvertiser.stopAdvertising(mAdvertiseCallback);
+        bluetoothLeAdvertiser.startAdvertising(advertiseSettings, advertisementData, mAdvertiseCallback);
     }
 
-    private AdvertiseData getAdvertisementData() {
+    private AdvertiseData getAdvertisementData(String uri) {
         AdvertiseData.Builder builder = new AdvertiseData.Builder();
         builder.setIncludeTxPowerLevel(false); // reserve advertising space for URI
 
-        byte[] beaconData = new byte[7];
-        beaconData[0] = 0x00; // flags
-        beaconData[1] = (byte) 0xBA; // transmit power
-        beaconData[2] = 0x00; // http://www.
-        beaconData[3] = 0x65; // e
-        beaconData[4] = 0x66; // f
-        beaconData[5] = 0x66; // f
-        beaconData[6] = 0x08; // .org
+        // Manually build the advertising info to send the URL http://www.eff.org
+        // See https://github.com/google/eddystone/tree/master/eddystone-url
+        byte[] urlData = AdvertiseDataUtils.encodeUri(uri);
+        if (urlData == null || urlData.length == 0) {
+            return null;
+        }
+
+        byte[] beaconData = new byte[urlData.length + 2];
+        System.arraycopy(urlData, 0, beaconData, 2, urlData.length);
+        beaconData[0] = 0x10; // frame type: url
+        beaconData[1] = (byte) 0xBA; // calibrated tx power at 0 m
 
         builder.addServiceData(URI_BEACON_UUID, beaconData);
 
-        // Adding 0xFED8 to the "Service Complete List UUID 16" (0x3) for iOS compatibility
+        // Adding 0xFEAA to the "Service Complete List UUID 16" (0x3) for iOS compatibility
         builder.addServiceUuid(URI_BEACON_UUID);
 
         return builder.build();
@@ -107,12 +183,12 @@ public class UriBeaconAdvertiserActivity extends Activity {
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle(R.string.bluetooth_error);
             builder.setMessage(R.string.no_bluetooth_advertise)
-            .setPositiveButton(R.string.ok, new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialogInterface, int i) {
-                    finish();
-                }
-            });
+                .setPositiveButton(R.string.ok, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        finish();
+                    }
+                });
             builder.show();
 
         } else {
@@ -153,7 +229,7 @@ public class UriBeaconAdvertiserActivity extends Activity {
         }
     }
 
-    private final AdvertiseCallback advertiseCallback = new AdvertiseCallback() {
+    private final AdvertiseCallback mAdvertiseCallback = new AdvertiseCallback() {
         @SuppressLint("Override")
         @Override
         public void onStartSuccess(AdvertiseSettings advertiseSettings) {
